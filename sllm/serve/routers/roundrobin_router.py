@@ -159,11 +159,6 @@ class RoundRobinRouter(SllmRouter):
             result = instance.backend_instance.generate_stream.remote(
                 request_data=request_data
             )
-
-            print("__router_result__: ", result)
-            async for val in result:
-                print("__router_val__: ", ray.get(val))
-
         elif action == "encode":
             result = await instance.backend_instance.encode.remote(
                 request_data=request_data

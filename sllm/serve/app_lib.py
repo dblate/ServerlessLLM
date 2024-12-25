@@ -96,10 +96,9 @@ def create_app() -> FastAPI:
         try:
             await controller.register.remote(body)
         except Exception as e:
-            print("register model error: ", e)
             raise HTTPException(
                 status_code=500,
-                detail=f"Cannot register model, please contact the administrator, detail: {e}",
+                detail="Cannot register model, please contact the administrator",
             )
 
         return {"status": "ok"}
@@ -149,24 +148,6 @@ def create_app() -> FastAPI:
         await controller.delete.remote(model_name)
 
         return {"status": f"deleted model {model_name}"}
-
-    @app.post("/v1/chat/simple_stream")
-    async def simple_stream(request: Request):
-        body = await request.json()
-        print("body: ", body)
-
-        # async def internal_generator():
-        #     async for i in range(10):
-        #         await asyncio.sleep(1)
-        #         yield f"index_{i}"
-        def internal_generator():
-            for i in range(10):
-                time.sleep(1)
-                yield f"index_{i} \n"
-
-        generator = internal_generator()
-        print("generator: ", generator)
-        return StreamingResponse(generator, media_type="text/event-stream")
 
     @app.post("/v1/chat/completions_stream")
     async def generate_stream(request: Request):

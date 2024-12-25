@@ -61,10 +61,7 @@ class InferenceStatus(BaseStreamer):
             for i, v in enumerate(value):
                 self.intermediate[i].append(v)
         logger.warning(f"Intermediate output: {self.intermediate}")
-
-        print("__put__: ", value)
         self.queue.put(value, timeout=self.timeout)
-
         if self.status == BackendStatus.DELETING:
             raise DeletingException("Backend is deleting")
 
@@ -259,12 +256,6 @@ class TransformersBackend(SllmBackend):
 
         return response
 
-    def fake_stream(self):
-        for i in range(5):
-            time.sleep(1)
-            print("__eval_fake_stream__: ", i)
-            yield i
-
     def generate_stream(self, request_data: Optional[Dict[str, Any]]):
         with self.status_lock:
             if self.status != BackendStatus.RUNNING:
@@ -328,30 +319,6 @@ class TransformersBackend(SllmBackend):
 
         inputs = self._tokenize(prompt)
         prompt_tokens = inputs.input_ids.shape[1]
-
-        # if stream:
-        #     print("in stream mode.")
-        #     # logger.info(f"{model_name} in stream mode.")
-        #     self.loop.run_in_executor(None, self.generate_text, inputs, max_tokens, temperature)
-
-        #     while True:
-        #         try:
-        #             for text in self.inf_status:
-        #                 print(f"Yield text: {text}")
-        #                 yield text
-        #             break
-        #         except Empty:
-        #             await asyncio.sleep(0.01)
-        #     # for text in self.inf_status:
-        #     #     print("__text__: ", text)
-        #     #     yield text
-
-        #     return
-
-        # generator = self.consume_streamer()
-        # print(f"consume_streamer generator: {generator}")
-        # return generator
-        # print("not in stream mode.")
 
         # Generate response
         try:
