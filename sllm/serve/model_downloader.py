@@ -70,7 +70,7 @@ def download_transformers_model(
         trust_remote_code=True,
     )
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path)
 
     from sllm_store.transformers import save_model
 

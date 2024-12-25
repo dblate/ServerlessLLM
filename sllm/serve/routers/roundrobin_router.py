@@ -17,10 +17,12 @@
 # ---------------------------------------------------------------------------- #
 import asyncio
 import logging
+import time
 import uuid
 from typing import Dict, Optional
 
 import ray
+from ray.util.queue import Empty
 
 from sllm.serve.inference_instance import start_instance
 from sllm.serve.logger import init_logger
@@ -113,7 +115,7 @@ class RoundRobinRouter(SllmRouter):
         pattern = "{model_name}_{id}"
         return pattern.format(model_name=self.model_name, id=uuid.uuid4())
 
-    async def inference(self, request_data: dict, action: str):
+    async def allocate_instance(self):
         async with self.running_lock:
             if not self.running:
                 return {"error": "Instance stopped"}
@@ -129,19 +131,39 @@ class RoundRobinRouter(SllmRouter):
         logger.info(f"Enqueued request for model {self.model_name}")
 
         instance_id = await instance_allocation
-        logger.info(f"{request_data}, type: {type(request_data)}")
         async with self.instance_management_lock:
             if instance_id not in self.ready_instances:
                 logger.error(f"Instance {instance_id} not found")
                 return {"error": "Instance not found"}
             instance = self.ready_instances[instance_id]
+        return instance
+
+    async def inference_stream(self, request_data):
+        instance = await self.allocate_instance()
+        fake_generator = instance.backend_instance.generate_stream.options(
+            num_returns="dynamic"
+        ).remote(request_data=request_data)
+        fake_generator_value = ray.get(fake_generator)
+        for val in fake_generator_value:
+            result = ray.get(val)
+            print("__fake_generator_result__: ", result)
+            yield result
+
+    async def inference(self, request_data: dict, action: str):
+        instance = await self.allocate_instance()
+
         # NOTE: `.remote(request_data)` does not work, don't know why.
         # Looks like a known issue:
         # https://github.com/ray-project/ray/issues/26283#issuecomment-1780691475
         if action == "generate":
-            result = await instance.backend_instance.generate.remote(
+            result = instance.backend_instance.generate_stream.remote(
                 request_data=request_data
             )
+
+            print("__router_result__: ", result)
+            async for val in result:
+                print("__router_val__: ", ray.get(val))
+
         elif action == "encode":
             result = await instance.backend_instance.encode.remote(
                 request_data=request_data

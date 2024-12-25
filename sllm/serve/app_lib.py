@@ -15,15 +15,58 @@
 #  see the license for the specific language governing permissions and         #
 #  limitations under the license.                                              #
 # ---------------------------------------------------------------------------- #
+import asyncio
+import time
 from contextlib import asynccontextmanager
 
 import ray
 import ray.exceptions
+import shortuuid
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse
 
 from sllm.serve.logger import init_logger
+from sllm.serve.openai_api_protocol import (
+    ChatCompletionResponseStreamChoice,
+    ChatCompletionStreamResponse,
+    DeltaMessage,
+)
 
 logger = init_logger(__name__)
+
+
+def chat_completion_stream_generator(model_name, generator):
+    print(f"model_name: {model_name}, generator: {generator}")
+    id = f"chatcmpl-{shortuuid.random()}"
+    finish_reason_events = []
+    # not support n now.
+
+    # first chunk with role
+    choice_data = ChatCompletionResponseStreamChoice(
+        index=0, delta=DeltaMessage(role="assistant"), finish_reason=None
+    )
+    chunk = ChatCompletionStreamResponse(
+        id=id,
+        choices=[choice_data],
+        model=model_name,
+    )
+    yield f"data: {chunk.model_dump_json(exclude_unset=True)}\n\n"
+
+    for val in generator:
+        text = ray.get(val)
+
+        choice_data = ChatCompletionResponseStreamChoice(
+            index=0,
+            delta=DeltaMessage(content=text),
+            finish_reason=None,
+        )
+        chunk = ChatCompletionStreamResponse(
+            id=id, choices=[choice_data], model=model_name
+        )
+        time.sleep(1)
+        yield f"data: {chunk.model_dump_json(exclude_unset=True)}\n\n"
+
+    yield "data [DONE]\n\n"
 
 
 def create_app() -> FastAPI:
@@ -53,9 +96,10 @@ def create_app() -> FastAPI:
         try:
             await controller.register.remote(body)
         except Exception as e:
+            print("register model error: ", e)
             raise HTTPException(
                 status_code=500,
-                detail="Cannot register model, please contact the administrator",
+                detail=f"Cannot register model, please contact the administrator, detail: {e}",
             )
 
         return {"status": "ok"}
@@ -105,6 +149,45 @@ def create_app() -> FastAPI:
         await controller.delete.remote(model_name)
 
         return {"status": f"deleted model {model_name}"}
+
+    @app.post("/v1/chat/simple_stream")
+    async def simple_stream(request: Request):
+        body = await request.json()
+        print("body: ", body)
+
+        # async def internal_generator():
+        #     async for i in range(10):
+        #         await asyncio.sleep(1)
+        #         yield f"index_{i}"
+        def internal_generator():
+            for i in range(10):
+                time.sleep(1)
+                yield f"index_{i} \n"
+
+        generator = internal_generator()
+        print("generator: ", generator)
+        return StreamingResponse(generator, media_type="text/event-stream")
+
+    @app.post("/v1/chat/completions_stream")
+    async def generate_stream(request: Request):
+        body = await request.json()
+        model_name = body.get("model")
+        logger.info(f"Received request for model {model_name}")
+        if not model_name:
+            raise HTTPException(
+                status_code=400, detail="Missing model_name in request body"
+            )
+
+        request_router = ray.get_actor(model_name, namespace="models")
+        logger.info(f"Got request router for {model_name}")
+
+        generator = request_router.inference_stream.remote(body)
+        final_generator = chat_completion_stream_generator(
+            model_name, generator
+        )
+        return StreamingResponse(
+            final_generator, media_type="text/event-stream"
+        )
 
     async def inference_handler(request: Request, action: str):
         body = await request.json()

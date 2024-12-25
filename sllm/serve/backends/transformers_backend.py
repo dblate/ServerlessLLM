@@ -15,6 +15,7 @@
 #  see the license for the specific language governing permissions and         #
 #  limitations under the license.                                              #
 # ---------------------------------------------------------------------------- #
+import asyncio
 import json
 import os
 import threading
@@ -25,7 +26,8 @@ from typing import Any, Dict, List, Optional
 
 import torch
 import torch.nn.functional as F
-from transformers import AutoTokenizer
+from ray.util.queue import Empty, Queue
+from transformers import AutoTokenizer, TextIteratorStreamer
 from transformers.generation.streamers import BaseStreamer
 
 from sllm.serve.backends.backend_utils import BackendStatus, SllmBackend
@@ -40,13 +42,17 @@ class DeletingException(Exception):
 
 
 class InferenceStatus(BaseStreamer):
-    def __init__(self, status: BackendStatus):
+    def __init__(self, status: BackendStatus, tokenizer):
         super().__init__()
         self.status = status
         self.intermediate = []
+        self.tokenizer = tokenizer
+        self.queue = Queue()
+        self.timeout = 5
 
     def put(self, value):
-        value = value.tolist()
+        # value = value.tolist()
+        value = value.flatten().tolist()
         if not self.intermediate:
             self.intermediate = value
         else:
@@ -55,10 +61,15 @@ class InferenceStatus(BaseStreamer):
             for i, v in enumerate(value):
                 self.intermediate[i].append(v)
         logger.warning(f"Intermediate output: {self.intermediate}")
+
+        print("__put__: ", value)
+        self.queue.put(value, timeout=self.timeout)
+
         if self.status == BackendStatus.DELETING:
             raise DeletingException("Backend is deleting")
 
     def end(self):
+        self.queue.put(self.stop_signal, timeout=self.timeout)
         logger.error("Inference completed")
 
     def get(self):
@@ -67,6 +78,16 @@ class InferenceStatus(BaseStreamer):
     def delete(self):
         logger.info("Deleting intermediate output")
         self.intermediate = []
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        value = self.queue.get(timeout=self.timeout)
+        if value == self.stop_signal:
+            raise StopIteration
+        else:
+            return value
 
 
 class TransformersBackend(SllmBackend):
@@ -82,11 +103,16 @@ class TransformersBackend(SllmBackend):
             "pretrained_model_name_or_path"
         )
         self.status: BackendStatus = BackendStatus.UNINITIALIZED
-        self.inf_status = InferenceStatus(self.status)
+        self.inf_status = InferenceStatus(self.status, None)
         self.status_lock = threading.Lock()
         self.model = None
         self.tokenizer = None
         self.past_key_values = None
+        try:
+            self.loop = asyncio.get_running_loop()
+        except Exception as e:
+            print("__asyncio.get_running_loop_exception__: ", e)
+            self.loop = asyncio.new_event_loop()
 
     def convert_str_to_json(self, json_str):
         try:
@@ -96,6 +122,9 @@ class TransformersBackend(SllmBackend):
         except json.JSONDecodeError as e:
             logger.error(f"Failed to decode JSON string: {e}")
             return None
+
+    def get_queue(self):
+        return self.inf_status.queue
 
     def init_backend(self) -> None:
         with self.status_lock:
@@ -137,6 +166,7 @@ class TransformersBackend(SllmBackend):
                 self.tokenizer = AutoTokenizer.from_pretrained(
                     self.pretrained_model_name_or_path
                 )
+            self.inf_status.tokenizer = self.tokenizer
             self.status = BackendStatus.RUNNING
 
     def _tokenize(self, prompt: str):
@@ -150,6 +180,21 @@ class TransformersBackend(SllmBackend):
             truncation=True,
             return_tensors="pt",
         ).to("cuda:0")
+
+    def generate_text(self, inputs, streamer):
+        self.model.generate(
+            inputs.input_ids, streamer=streamer, max_new_tokens=200
+        )
+
+    def consume_streamer(self):
+        while True:
+            try:
+                for text in self.inf_status:
+                    logger.info(f"Yield text: {text}")
+                    yield text
+                break
+            except Empty:
+                time.sleep(0.01)
 
     def encode(self, request_data: Optional[Dict[str, Any]]):
         with self.status_lock:
@@ -214,10 +259,17 @@ class TransformersBackend(SllmBackend):
 
         return response
 
-    def generate(self, request_data: Optional[Dict[str, Any]]):
+    def fake_stream(self):
+        for i in range(5):
+            time.sleep(1)
+            print("__eval_fake_stream__: ", i)
+            yield i
+
+    def generate_stream(self, request_data: Optional[Dict[str, Any]]):
         with self.status_lock:
             if self.status != BackendStatus.RUNNING:
-                return {"error": "Model not initialized"}
+                # return {"error": "Model not initialized"}
+                raise Exception("Model not initialized")
 
         assert self.model is not None
 
@@ -225,6 +277,7 @@ class TransformersBackend(SllmBackend):
         messages = request_data.get("messages", [])
         temperature = request_data.get("temperature", 0.7)
         max_tokens = request_data.get("max_tokens", 10)
+        stream = request_data.get("stream", False)
 
         # Combine messages to form the prompt
         prompt = self.tokenizer.apply_chat_template(
@@ -232,10 +285,73 @@ class TransformersBackend(SllmBackend):
         )
 
         if not prompt:
-            return {"error": "Missing prompt in request data"}
+            # return {"error": "Missing prompt in request data"}
+            raise Exception("Missing prompt in request data")
 
         inputs = self._tokenize(prompt)
         prompt_tokens = inputs.input_ids.shape[1]
+
+        streamer = TextIteratorStreamer(
+            self.tokenizer,
+            timeout=3,
+            skip_prompt=True,
+            skip_special_tokens=True,
+        )
+        self.loop.run_in_executor(None, self.generate_text, inputs, streamer)
+        for token in streamer:
+            print("yield token: ", token)
+            yield token
+
+    def generate(self, request_data: Optional[Dict[str, Any]]):
+        with self.status_lock:
+            if self.status != BackendStatus.RUNNING:
+                # return {"error": "Model not initialized"}
+                raise Exception("Model not initialized")
+
+        assert self.model is not None
+
+        model_name = request_data.get("model", "dummy-model")
+        messages = request_data.get("messages", [])
+        temperature = request_data.get("temperature", 0.7)
+        max_tokens = request_data.get("max_tokens", 10)
+        stream = request_data.get("stream", False)
+        print("__stream?__: ", stream)
+
+        # Combine messages to form the prompt
+        prompt = self.tokenizer.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=False
+        )
+
+        if not prompt:
+            # return {"error": "Missing prompt in request data"}
+            raise Exception("Missing prompt in request data")
+
+        inputs = self._tokenize(prompt)
+        prompt_tokens = inputs.input_ids.shape[1]
+
+        # if stream:
+        #     print("in stream mode.")
+        #     # logger.info(f"{model_name} in stream mode.")
+        #     self.loop.run_in_executor(None, self.generate_text, inputs, max_tokens, temperature)
+
+        #     while True:
+        #         try:
+        #             for text in self.inf_status:
+        #                 print(f"Yield text: {text}")
+        #                 yield text
+        #             break
+        #         except Empty:
+        #             await asyncio.sleep(0.01)
+        #     # for text in self.inf_status:
+        #     #     print("__text__: ", text)
+        #     #     yield text
+
+        #     return
+
+        # generator = self.consume_streamer()
+        # print(f"consume_streamer generator: {generator}")
+        # return generator
+        # print("not in stream mode.")
 
         # Generate response
         try:
