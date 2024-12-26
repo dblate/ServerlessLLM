@@ -140,23 +140,28 @@ class RoundRobinRouter(SllmRouter):
 
     async def inference_stream(self, request_data):
         instance = await self.allocate_instance()
-        fake_generator = instance.backend_instance.generate_stream.options(
+
+        generator_ref = instance.backend_instance.generate_stream.options(
             num_returns="dynamic"
         ).remote(request_data=request_data)
-        fake_generator_value = ray.get(fake_generator)
-        for val in fake_generator_value:
-            result = ray.get(val)
-            print("__fake_generator_result__: ", result)
-            yield result
+        generator = ray.get(generator_ref)
+
+        for val_ref in generator:
+            val = ray.get(val_ref)
+            yield val
+
+        await instance.add_requests(-1)
+        async with self.request_count_lock:
+            self.request_count -= 1
+        logger.info("Finished processing streaming request")
 
     async def inference(self, request_data: dict, action: str):
         instance = await self.allocate_instance()
-
         # NOTE: `.remote(request_data)` does not work, don't know why.
         # Looks like a known issue:
         # https://github.com/ray-project/ray/issues/26283#issuecomment-1780691475
         if action == "generate":
-            result = instance.backend_instance.generate_stream.remote(
+            result = await instance.backend_instance.generate.remote(
                 request_data=request_data
             )
         elif action == "encode":

@@ -42,17 +42,13 @@ class DeletingException(Exception):
 
 
 class InferenceStatus(BaseStreamer):
-    def __init__(self, status: BackendStatus, tokenizer):
+    def __init__(self, status: BackendStatus):
         super().__init__()
         self.status = status
         self.intermediate = []
-        self.tokenizer = tokenizer
-        self.queue = Queue()
-        self.timeout = 5
 
     def put(self, value):
-        # value = value.tolist()
-        value = value.flatten().tolist()
+        value = value.tolist()
         if not self.intermediate:
             self.intermediate = value
         else:
@@ -61,12 +57,10 @@ class InferenceStatus(BaseStreamer):
             for i, v in enumerate(value):
                 self.intermediate[i].append(v)
         logger.warning(f"Intermediate output: {self.intermediate}")
-        self.queue.put(value, timeout=self.timeout)
         if self.status == BackendStatus.DELETING:
             raise DeletingException("Backend is deleting")
 
     def end(self):
-        self.queue.put(self.stop_signal, timeout=self.timeout)
         logger.error("Inference completed")
 
     def get(self):
@@ -75,16 +69,6 @@ class InferenceStatus(BaseStreamer):
     def delete(self):
         logger.info("Deleting intermediate output")
         self.intermediate = []
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        value = self.queue.get(timeout=self.timeout)
-        if value == self.stop_signal:
-            raise StopIteration
-        else:
-            return value
 
 
 class TransformersBackend(SllmBackend):
@@ -100,16 +84,12 @@ class TransformersBackend(SllmBackend):
             "pretrained_model_name_or_path"
         )
         self.status: BackendStatus = BackendStatus.UNINITIALIZED
-        self.inf_status = InferenceStatus(self.status, None)
+        self.inf_status = InferenceStatus(self.status)
         self.status_lock = threading.Lock()
+        self.loop = asyncio.new_event_loop()
         self.model = None
         self.tokenizer = None
         self.past_key_values = None
-        try:
-            self.loop = asyncio.get_running_loop()
-        except Exception as e:
-            print("__asyncio.get_running_loop_exception__: ", e)
-            self.loop = asyncio.new_event_loop()
 
     def convert_str_to_json(self, json_str):
         try:
@@ -119,9 +99,6 @@ class TransformersBackend(SllmBackend):
         except json.JSONDecodeError as e:
             logger.error(f"Failed to decode JSON string: {e}")
             return None
-
-    def get_queue(self):
-        return self.inf_status.queue
 
     def init_backend(self) -> None:
         with self.status_lock:
@@ -163,7 +140,6 @@ class TransformersBackend(SllmBackend):
                 self.tokenizer = AutoTokenizer.from_pretrained(
                     self.pretrained_model_name_or_path
                 )
-            self.inf_status.tokenizer = self.tokenizer
             self.status = BackendStatus.RUNNING
 
     def _tokenize(self, prompt: str):
@@ -178,20 +154,13 @@ class TransformersBackend(SllmBackend):
             return_tensors="pt",
         ).to("cuda:0")
 
-    def generate_text(self, inputs, streamer):
+    def generate_text(self, inputs, streamer, temperature, max_new_tokens):
         self.model.generate(
-            inputs.input_ids, streamer=streamer, max_new_tokens=200
+            inputs.input_ids,
+            streamer=streamer,
+            temperature=temperature,
+            max_new_tokens=max_new_tokens,
         )
-
-    def consume_streamer(self):
-        while True:
-            try:
-                for text in self.inf_status:
-                    logger.info(f"Yield text: {text}")
-                    yield text
-                break
-            except Empty:
-                time.sleep(0.01)
 
     def encode(self, request_data: Optional[Dict[str, Any]]):
         with self.status_lock:
@@ -259,7 +228,6 @@ class TransformersBackend(SllmBackend):
     def generate_stream(self, request_data: Optional[Dict[str, Any]]):
         with self.status_lock:
             if self.status != BackendStatus.RUNNING:
-                # return {"error": "Model not initialized"}
                 raise Exception("Model not initialized")
 
         assert self.model is not None
@@ -276,7 +244,6 @@ class TransformersBackend(SllmBackend):
         )
 
         if not prompt:
-            # return {"error": "Missing prompt in request data"}
             raise Exception("Missing prompt in request data")
 
         inputs = self._tokenize(prompt)
@@ -288,16 +255,16 @@ class TransformersBackend(SllmBackend):
             skip_prompt=True,
             skip_special_tokens=True,
         )
-        self.loop.run_in_executor(None, self.generate_text, inputs, streamer)
+        self.loop.run_in_executor(
+            None, self.generate_text, inputs, streamer, temperature, max_tokens
+        )
         for token in streamer:
-            print("yield token: ", token)
             yield token
 
     def generate(self, request_data: Optional[Dict[str, Any]]):
         with self.status_lock:
             if self.status != BackendStatus.RUNNING:
-                # return {"error": "Model not initialized"}
-                raise Exception("Model not initialized")
+                return {"error": "Model not initialized"}
 
         assert self.model is not None
 
@@ -305,8 +272,6 @@ class TransformersBackend(SllmBackend):
         messages = request_data.get("messages", [])
         temperature = request_data.get("temperature", 0.7)
         max_tokens = request_data.get("max_tokens", 10)
-        stream = request_data.get("stream", False)
-        print("__stream?__: ", stream)
 
         # Combine messages to form the prompt
         prompt = self.tokenizer.apply_chat_template(
@@ -314,8 +279,7 @@ class TransformersBackend(SllmBackend):
         )
 
         if not prompt:
-            # return {"error": "Missing prompt in request data"}
-            raise Exception("Missing prompt in request data")
+            return {"error": "Missing prompt in request data"}
 
         inputs = self._tokenize(prompt)
         prompt_tokens = inputs.input_ids.shape[1]

@@ -36,10 +36,7 @@ logger = init_logger(__name__)
 
 
 def chat_completion_stream_generator(model_name, generator):
-    print(f"model_name: {model_name}, generator: {generator}")
     id = f"chatcmpl-{shortuuid.random()}"
-    finish_reason_events = []
-    # not support n now.
 
     # first chunk with role
     choice_data = ChatCompletionResponseStreamChoice(
@@ -54,6 +51,8 @@ def chat_completion_stream_generator(model_name, generator):
 
     for val in generator:
         text = ray.get(val)
+        if text == "":
+            continue
 
         choice_data = ChatCompletionResponseStreamChoice(
             index=0,
@@ -63,8 +62,18 @@ def chat_completion_stream_generator(model_name, generator):
         chunk = ChatCompletionStreamResponse(
             id=id, choices=[choice_data], model=model_name
         )
-        time.sleep(1)
         yield f"data: {chunk.model_dump_json(exclude_unset=True)}\n\n"
+
+    # last chunk for finish_reason
+    choice_data = ChatCompletionResponseStreamChoice(
+        index=0,
+        delta=DeltaMessage(content=""),
+        finish_reason="stop",
+    )
+    chunk = ChatCompletionStreamResponse(
+        id=id, choices=[choice_data], model=model_name
+    )
+    yield f"data {chunk.model_dump_json(exclude_unset=True)}\n\n"
 
     yield "data [DONE]\n\n"
 
@@ -187,7 +196,28 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/chat/completions")
     async def generate_handler(request: Request):
-        return await inference_handler(request, "generate")
+        body = await request.json()
+        model_name = body.get("model")
+        logger.info(f"Received request for model {model_name}")
+        if not model_name:
+            raise HTTPException(
+                status_code=400, detail="Missing model_name in request body"
+            )
+
+        request_router = ray.get_actor(model_name, namespace="models")
+        logger.info(f"Got request router for {model_name}")
+
+        if body.get("stream", False):
+            generator = request_router.inference_stream.remote(body)
+            final_generator = chat_completion_stream_generator(
+                model_name, generator
+            )
+            return StreamingResponse(
+                final_generator, media_type="text/event-stream"
+            )
+
+        result = request_router.inference.remote(body, "generate")
+        return await result
 
     @app.post("/v1/embeddings")
     async def embeddings_handler(request: Request):
