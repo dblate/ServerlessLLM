@@ -183,6 +183,19 @@ class SllmController:
         async with self.metadata_lock:
             return self.registered_models
 
+    async def get_status(self):
+        async with self.metadata_lock:
+            status = {
+                "registered_models": self.registered_models,
+                "request_routers": {},
+            }
+
+            for name in self.request_routers:
+                status["request_routers"][name] = await self.request_routers[
+                    name
+                ].get_status.remote()
+            return status
+
     async def shutdown(self):
         # stop the control loop
         async with self.running_lock:

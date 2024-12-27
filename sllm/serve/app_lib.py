@@ -18,6 +18,7 @@
 import asyncio
 import time
 from contextlib import asynccontextmanager
+from typing import Optional
 
 import ray
 import ray.exceptions
@@ -224,18 +225,14 @@ def create_app() -> FastAPI:
         return await inference_handler(request, "encode")
 
     @app.get("/v1/status")
-    def status_handler(model):
-        model_name = model
-        logger.info(f"Received request for model {model_name}")
-        if not model_name:
+    def status_handler():
+        controller = ray.get_actor("controller")
+        if not controller:
             raise HTTPException(
-                status_code=400, detail="Missing model_name in request body"
+                status_code=500, detail="Controller not initialized"
             )
 
-        request_router = ray.get_actor(model_name, namespace="models")
-        logger.info(f"Got request router for {model_name}")
-        status = request_router.get_status.remote()
-        status = ray.get(status)
+        status = ray.get(controller.get_status.remote())
         return status
 
     return app
