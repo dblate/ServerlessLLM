@@ -73,9 +73,9 @@ def chat_completion_stream_generator(model_name, generator):
     chunk = ChatCompletionStreamResponse(
         id=id, choices=[choice_data], model=model_name
     )
-    yield f"data {chunk.model_dump_json(exclude_unset=True)}\n\n"
+    yield f"data: {chunk.model_dump_json(exclude_unset=True)}\n\n"
 
-    yield "data [DONE]\n\n"
+    yield "data: [DONE]\n\n"
 
 
 def create_app() -> FastAPI:
