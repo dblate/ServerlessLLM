@@ -223,4 +223,19 @@ def create_app() -> FastAPI:
     async def embeddings_handler(request: Request):
         return await inference_handler(request, "encode")
 
+    @app.get("/v1/status")
+    def status_handler(model):
+        model_name = model
+        logger.info(f"Received request for model {model_name}")
+        if not model_name:
+            raise HTTPException(
+                status_code=400, detail="Missing model_name in request body"
+            )
+
+        request_router = ray.get_actor(model_name, namespace="models")
+        logger.info(f"Got request router for {model_name}")
+        status = request_router.get_status.remote()
+        status = ray.get(status)
+        return status
+
     return app

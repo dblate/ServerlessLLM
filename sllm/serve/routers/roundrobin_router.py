@@ -94,6 +94,18 @@ class RoundRobinRouter(SllmRouter):
         self.auto_scaler = None
         logger.info(f"Created new handler for model {self.model_name}")
 
+    def get_status(self):
+        return {
+            "model_name": self.model_name,
+            "auto_scaling_config": self.auto_scaling_config,
+            "starting_instances": len(self.starting_instances),
+            "deleting_instances": len(self.deleting_instances),
+            "ready_instances": len(self.ready_instances),
+            "request_count": self.request_count,
+            "queue_len": self.request_queue.qsize(),
+            "idle_time": self.idle_time,
+        }
+
     async def start(self, auto_scaling_config: Dict[str, int]):
         self.model_loading_scheduler = ray.get_actor("model_loading_scheduler")
         async with self.auto_scaling_lock:
