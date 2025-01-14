@@ -78,7 +78,7 @@ class RoundRobinRouter(SllmRouter):
         self.deleting_instances: Dict[str, InstanceHandle] = {}  # type:ignore
         self.ready_instances: Dict[str, InstanceHandle] = {}  # type:ignore
         # TODO: temporary add allocating_resource_instances
-        self.allocating_resource_instances: Dict[str, InstanceHandle] = {} # type:ignore
+        self.allocating_resource_instances: Dict[str, bool] = {} # type:ignore
         self.instance_management_lock = asyncio.Lock()
 
         self.auto_scaling_config = {}
@@ -96,19 +96,18 @@ class RoundRobinRouter(SllmRouter):
         self.auto_scaler = None
         logger.info(f"Created new handler for model {self.model_name}")
 
+    # TODO 改为异步，带上锁？
     def get_status(self):
-        with self.instance_management_lock:
-            return {
-                "model_name": self.model_name,
-                "auto_scaling_config": self.auto_scaling_config,
-                "allocating_resource_instances": len(self.allocating_resource_instances),
-                "starting_instances": len(self.starting_instances),
-                "deleting_instances": len(self.deleting_instances),
-                "ready_instances": len(self.ready_instances),
-                "request_count": self.request_count,
-                "queue_len": self.request_queue.qsize(),
-                "idle_time": self.idle_time,
-            }
+        return {
+            "model_name": self.model_name,
+            "auto_scaling_config": self.auto_scaling_config,
+            "starting_instances": len(self.starting_instances),
+            "deleting_instances": len(self.deleting_instances),
+            "ready_instances": len(self.ready_instances),
+            "request_count": self.request_count,
+            "queue_len": self.request_queue.qsize(),
+            "idle_time": self.idle_time,
+        }
 
     async def start(self, auto_scaling_config: Dict[str, int]):
         self.model_loading_scheduler = ray.get_actor("model_loading_scheduler")
@@ -295,7 +294,6 @@ class RoundRobinRouter(SllmRouter):
         )
         async with self.instance_management_lock:
             self.starting_instances[instance_id] = instance
-            self.allocating_resource_instances[instance_id] = instance
         self.loop.create_task(self._start_instance(instance_id))
 
         return instance_id
@@ -315,8 +313,6 @@ class RoundRobinRouter(SllmRouter):
                 self.model_name, instance_id, self.resource_requirements
             )
         )
-        async with self.instance_management_lock:
-            self.allocating_resource_instances.pop(instance_id)
         startup_config = {
             "num_cpus": self.resource_requirements["num_cpus"],
             "num_gpus": self.resource_requirements["num_gpus"],
