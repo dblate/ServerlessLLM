@@ -97,8 +97,9 @@ class RoundRobinRouter(SllmRouter):
     async def get_status(self):
         async with self.instance_management_lock:
             allocating_instances_len = 0
-            for name in self.starting_instances:
-                if not self.starting_instances[name].node_id:
+            for instance in self.starting_instances.values():
+                instance_status = await instance.get_status()
+                if not instance_status.node_id:
                     allocating_instances_len += 1
 
             return {

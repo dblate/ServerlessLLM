@@ -49,13 +49,22 @@ class InferenceStatus(BaseStreamer):
 
     def put(self, value):
         value = value.tolist()
+        print(
+            "__streamer value__: ", value, ", intermediate: ", self.intermediate
+        )
         if not self.intermediate:
             self.intermediate = value
         else:
             # NOTE: This does not support in-flight batching
             # or dynamic batch size
             for i, v in enumerate(value):
-                self.intermediate[i].append(v)
+                # TODO there might be a bug in generate method, while model.generate is completed, streamer is still put value.
+                try:
+                    self.intermediate[i].append(v)
+                except Exception as e:
+                    print(
+                        "__streamer exception__: ", e, self.intermediate, value
+                    )
         logger.warning(f"Intermediate output: {self.intermediate}")
         if self.status == BackendStatus.DELETING:
             raise DeletingException("Backend is deleting")
