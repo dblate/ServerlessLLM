@@ -109,7 +109,6 @@ class RoundRobinRouter(SllmRouter):
                 "deleting_instances": len(self.deleting_instances),
                 "ready_instances": len(self.ready_instances),
                 "request_count": self.request_count,
-                "queue_len": self.request_queue.qsize(),
                 "idle_time": self.idle_time,
             }
 

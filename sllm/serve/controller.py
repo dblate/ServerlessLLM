@@ -186,7 +186,6 @@ class SllmController:
     async def get_status(self):
         async with self.metadata_lock:
             status = {
-                "registered_models": self.registered_models,
                 "request_routers": {},
             }
 
