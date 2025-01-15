@@ -94,17 +94,24 @@ class RoundRobinRouter(SllmRouter):
         self.auto_scaler = None
         logger.info(f"Created new handler for model {self.model_name}")
 
-    def get_status(self):
-        return {
-            "model_name": self.model_name,
-            "auto_scaling_config": self.auto_scaling_config,
-            "starting_instances": len(self.starting_instances),
-            "deleting_instances": len(self.deleting_instances),
-            "ready_instances": len(self.ready_instances),
-            "request_count": self.request_count,
-            "queue_len": self.request_queue.qsize(),
-            "idle_time": self.idle_time,
-        }
+    async def get_status(self):
+        async with self.instance_management_lock:
+            allocating_instances_len = 0
+            for name in self.starting_instances:
+                if not self.starting_instances[name].node_id:
+                    allocating_instances_len += 1
+
+            return {
+                "model_name": self.model_name,
+                "auto_scaling_config": self.auto_scaling_config,
+                "allocating_resource_instances": allocating_instances_len,
+                "starting_instances": len(self.starting_instances),
+                "deleting_instances": len(self.deleting_instances),
+                "ready_instances": len(self.ready_instances),
+                "request_count": self.request_count,
+                "queue_len": self.request_queue.qsize(),
+                "idle_time": self.idle_time,
+            }
 
     async def start(self, auto_scaling_config: Dict[str, int]):
         self.model_loading_scheduler = ray.get_actor("model_loading_scheduler")
@@ -310,6 +317,12 @@ class RoundRobinRouter(SllmRouter):
                 self.model_name, instance_id, self.resource_requirements
             )
         )
+        async with instance.lock:
+            instance.node_id = startup_node
+        logger.info(
+            f"Model {self.model_name} on instance {instance_id} has allocated resource on node {startup_node}"
+        )
+
         startup_config = {
             "num_cpus": self.resource_requirements["num_cpus"],
             "num_gpus": self.resource_requirements["num_gpus"],
@@ -338,7 +351,6 @@ class RoundRobinRouter(SllmRouter):
         instance.backend_instance = ray.get_actor(instance_id)
         async with instance.lock:
             instance.ready = True
-            instance.node_id = startup_node
         await instance.backend_instance.init_backend.remote()
         async with self.instance_management_lock:
             self.ready_instances[instance_id] = instance
