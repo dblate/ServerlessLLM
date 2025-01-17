@@ -160,14 +160,17 @@ class RoundRobinRouter(SllmRouter):
     async def inference_stream(self, request_data):
         instance = await self.allocate_instance()
 
-        generator_ref = instance.backend_instance.generate_stream.options(
-            num_returns="dynamic"
-        ).remote(request_data=request_data)
-        generator = ray.get(generator_ref)
+        try:
+            generator_ref = instance.backend_instance.generate_stream.options(
+                num_returns="dynamic"
+            ).remote(request_data=request_data)
+            generator = ray.get(generator_ref)
 
-        for val_ref in generator:
-            val = ray.get(val_ref)
-            yield val
+            for val_ref in generator:
+                val = ray.get(val_ref)
+                yield val
+        except Exception as e:
+            logger.info(f"Exception in inference_stream: {e}")
 
         await instance.add_requests(-1)
         async with self.request_count_lock:
@@ -180,13 +183,19 @@ class RoundRobinRouter(SllmRouter):
         # Looks like a known issue:
         # https://github.com/ray-project/ray/issues/26283#issuecomment-1780691475
         if action == "generate":
-            result = await instance.backend_instance.generate.remote(
-                request_data=request_data
-            )
+            try:
+                result = await instance.backend_instance.generate.remote(
+                    request_data=request_data
+                )
+            except Exception as e:
+                result = {"error": f"Get exception while generating: {e}"}
         elif action == "encode":
-            result = await instance.backend_instance.encode.remote(
-                request_data=request_data
-            )
+            try:
+                result = await instance.backend_instance.encode.remote(
+                    request_data=request_data
+                )
+            except Exception as e:
+                result = {"error": f"Get exception while encoding: {e}"}
         else:
             result = {"error": "Invalid action"}
         logger.info(f"Finished processing request")

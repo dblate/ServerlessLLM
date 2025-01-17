@@ -243,8 +243,8 @@ class TransformersBackend(SllmBackend):
 
         model_name = request_data.get("model", "dummy-model")
         messages = request_data.get("messages", [])
-        temperature = request_data.get("temperature", 0.7)
-        max_tokens = request_data.get("max_tokens", 1024)
+        temperature = float(request_data.get("temperature", 0.7))
+        max_tokens = int(request_data.get("max_tokens", 1024))
         stream = request_data.get("stream", False)
 
         # Combine messages to form the prompt
@@ -279,8 +279,8 @@ class TransformersBackend(SllmBackend):
 
         model_name = request_data.get("model", "dummy-model")
         messages = request_data.get("messages", [])
-        temperature = request_data.get("temperature", 0.7)
-        max_tokens = request_data.get("max_tokens", 10)
+        temperature = float(request_data.get("temperature", 0.7))
+        max_tokens = int(request_data.get("max_tokens", 1024))
 
         # Combine messages to form the prompt
         prompt = self.tokenizer.apply_chat_template(
@@ -419,8 +419,8 @@ class TransformersBackend(SllmBackend):
 
         model_name = request_data.get("model", "dummy-model")
         messages = request_data.get("messages", [])
-        temperature = request_data.get("temperature", 0.7)
-        max_tokens = request_data.get("max_tokens", 1024)
+        temperature = float(request_data.get("temperature", 0.7))
+        max_tokens = int(request_data.get("max_tokens", 1024))
 
         # Combine messages to form the prompt
         prompt = self.tokenizer.apply_chat_template(
