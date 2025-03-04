@@ -22,8 +22,6 @@ import uuid
 from typing import Dict, Optional
 
 import ray
-from ray.util.queue import Queue, Empty
-
 from sllm.serve.inference_instance import start_instance
 from sllm.serve.logger import init_logger
 

@@ -239,13 +239,6 @@ class TransformersBackend(SllmBackend):
 
         return response
 
-
-    # async def generate_alpha(self, request_data: Optional[Dict[str, Any]]):
-    #     for i in range(10):
-    #         await asyncio.sleep(1)
-    #         yield f"generate_alpha_{i}"
-
-
     async def generate_stream(self, request_data: Optional[Dict[str, Any]]):
         with self.status_lock:
             if self.status != BackendStatus.RUNNING:
