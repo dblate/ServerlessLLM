@@ -22,7 +22,7 @@ import uuid
 from typing import Dict, Optional
 
 import ray
-from ray.util.queue import Empty
+from ray.util.queue import Queue, Empty
 
 from sllm.serve.inference_instance import start_instance
 from sllm.serve.logger import init_logger
@@ -161,14 +161,10 @@ class RoundRobinRouter(SllmRouter):
         instance = await self.allocate_instance()
 
         try:
-            generator_ref = instance.backend_instance.generate_stream.options(
-                num_returns="dynamic"
-            ).remote(request_data=request_data)
-            generator = ray.get(generator_ref)
-
-            for val_ref in generator:
-                val = ray.get(val_ref)
-                yield val
+            generator = instance.backend_instance.generate_stream.options(num_returns="streaming").remote(request_data=request_data)
+            async for val in generator:
+                text = await val
+                yield text
         except Exception as e:
             logger.info(f"Exception in inference_stream: {e}")
 

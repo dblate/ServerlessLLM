@@ -27,12 +27,13 @@ from typing import Any, Dict, List, Optional
 import torch
 import torch.nn.functional as F
 from ray.util.queue import Empty, Queue
-from transformers import AutoTokenizer, TextIteratorStreamer
+from transformers import AutoTokenizer, TextIteratorStreamer, AutoModelForCausalLM
 from transformers.generation.streamers import BaseStreamer
 
 from sllm.serve.backends.backend_utils import BackendStatus, SllmBackend
 from sllm.serve.logger import init_logger
 from sllm_store.transformers import load_model
+from queue import Empty
 
 logger = init_logger(__name__)
 
@@ -49,9 +50,6 @@ class InferenceStatus(BaseStreamer):
 
     def put(self, value):
         value = value.tolist()
-        print(
-            "__streamer value__: ", value, ", intermediate: ", self.intermediate
-        )
         if not self.intermediate:
             self.intermediate = value
         else:
@@ -132,12 +130,19 @@ class TransformersBackend(SllmBackend):
 
             storage_path = os.getenv("STORAGE_PATH", "./models")
             model_path = os.path.join("transformers", self.model_name)
-            self.model = load_model(
-                model_path,
-                device_map=device_map,
-                torch_dtype=torch_dtype,
-                storage_path=storage_path,
-                hf_model_class=hf_model_class,
+            # self.model = load_model(
+            #     model_path,
+            #     device_map=device_map,
+            #     torch_dtype=torch_dtype,
+            #     storage_path=storage_path,
+            #     hf_model_class=hf_model_class,
+            # )
+            # Fall back to use transformers load model
+            # sllm-store load_model will generate nothing now
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.pretrained_model_name_or_path,
+                torch_dtype="auto",
+                device_map="auto"
             )
             tokenizer_path = os.path.join(
                 storage_path, "transformers", self.model_name, "tokenizer"
@@ -152,7 +157,7 @@ class TransformersBackend(SllmBackend):
             self.status = BackendStatus.RUNNING
 
     def _tokenize(self, prompt: str):
-        return self.tokenizer(prompt, return_tensors="pt").to("cuda:0")
+        return self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
 
     def _encoder_tokenize(self, query: str, max_length: int):
         return self.tokenizer(
@@ -161,7 +166,7 @@ class TransformersBackend(SllmBackend):
             padding=True,
             truncation=True,
             return_tensors="pt",
-        ).to("cuda:0")
+        ).to(self.model.device)
 
     def generate_text(self, inputs, streamer, temperature, max_new_tokens):
         self.model.generate(
@@ -234,7 +239,14 @@ class TransformersBackend(SllmBackend):
 
         return response
 
-    def generate_stream(self, request_data: Optional[Dict[str, Any]]):
+
+    # async def generate_alpha(self, request_data: Optional[Dict[str, Any]]):
+    #     for i in range(10):
+    #         await asyncio.sleep(1)
+    #         yield f"generate_alpha_{i}"
+
+
+    async def generate_stream(self, request_data: Optional[Dict[str, Any]]):
         with self.status_lock:
             if self.status != BackendStatus.RUNNING:
                 raise Exception("Model not initialized")
@@ -260,15 +272,20 @@ class TransformersBackend(SllmBackend):
 
         streamer = TextIteratorStreamer(
             self.tokenizer,
-            timeout=3,
+            timeout=10,
             skip_prompt=True,
             skip_special_tokens=True,
         )
         self.loop.run_in_executor(
             None, self.generate_text, inputs, streamer, temperature, max_tokens
         )
-        for token in streamer:
-            yield token
+        while True:
+            try:
+                for token in streamer:
+                    yield token
+                break
+            except Empty:
+                await asyncio.sleep(0.1)
 
     def generate(self, request_data: Optional[Dict[str, Any]]):
         with self.status_lock:

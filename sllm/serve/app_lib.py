@@ -36,7 +36,7 @@ from sllm.serve.openai_api_protocol import (
 logger = init_logger(__name__)
 
 
-def chat_completion_stream_generator(model_name, generator):
+async def chat_completion_stream_generator(model_name, generator):
     id = f"chatcmpl-{shortuuid.random()}"
 
     # first chunk with role
@@ -50,8 +50,8 @@ def chat_completion_stream_generator(model_name, generator):
     )
     yield f"data: {chunk.model_dump_json(exclude_unset=True)}\n\n"
 
-    for val in generator:
-        text = ray.get(val)
+    async for val in generator:
+        text = await val
         if text == "":
             continue
 
@@ -158,27 +158,6 @@ def create_app() -> FastAPI:
         await controller.delete.remote(model_name)
 
         return {"status": f"deleted model {model_name}"}
-
-    @app.post("/v1/chat/completions_stream")
-    async def generate_stream(request: Request):
-        body = await request.json()
-        model_name = body.get("model")
-        logger.info(f"Received request for model {model_name}")
-        if not model_name:
-            raise HTTPException(
-                status_code=400, detail="Missing model_name in request body"
-            )
-
-        request_router = ray.get_actor(model_name, namespace="models")
-        logger.info(f"Got request router for {model_name}")
-
-        generator = request_router.inference_stream.remote(body)
-        final_generator = chat_completion_stream_generator(
-            model_name, generator
-        )
-        return StreamingResponse(
-            final_generator, media_type="text/event-stream"
-        )
 
     async def inference_handler(request: Request, action: str):
         body = await request.json()
