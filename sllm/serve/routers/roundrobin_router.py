@@ -93,23 +93,22 @@ class RoundRobinRouter(SllmRouter):
         logger.info(f"Created new handler for model {self.model_name}")
 
     async def get_status(self):
-        async with self.instance_management_lock:
-            allocating_instances_len = 0
-            for instance in self.starting_instances.values():
-                instance_status = await instance.get_status()
-                if not instance_status.node_id:
-                    allocating_instances_len += 1
+        allocating_instances_len = 0
+        for instance in self.starting_instances.values():
+            instance_status = await instance.get_status()
+            if not instance_status.node_id:
+                allocating_instances_len += 1
 
-            return {
-                "model_name": self.model_name,
-                "auto_scaling_config": self.auto_scaling_config,
-                "allocating_resource_instances": allocating_instances_len,
-                "starting_instances": len(self.starting_instances),
-                "deleting_instances": len(self.deleting_instances),
-                "ready_instances": len(self.ready_instances),
-                "request_count": self.request_count,
-                "idle_time": self.idle_time,
-            }
+        return {
+            "model_name": self.model_name,
+            "auto_scaling_config": self.auto_scaling_config,
+            "allocating_resource_instances": allocating_instances_len,
+            "starting_instances": len(self.starting_instances),
+            "deleting_instances": len(self.deleting_instances),
+            "ready_instances": len(self.ready_instances),
+            "request_count": self.request_count,
+            "idle_time": self.idle_time,
+        }
 
     async def start(self, auto_scaling_config: Dict[str, int]):
         self.model_loading_scheduler = ray.get_actor("model_loading_scheduler")
